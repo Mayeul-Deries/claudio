@@ -1,0 +1,156 @@
+import sys
+import threading
+
+# IMPORTANT: On Windows, PyTorch (imported via Whisper in transcriber) must be 
+# imported BEFORE PyQt6, otherwise it causes an OSError: [WinError 1114] DLL init failed.
+from transcriber import TranscriberThread
+
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PyQt6.QtGui import QIcon, QPixmap, QColor
+from PyQt6.QtCore import Qt, QTimer
+
+from ui import VoiceBarUI, UIState
+from recorder import AudioRecorder
+from paste import copy_and_paste
+from hotkeys import HotkeyListener
+
+class ClaudioApp:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
+        
+        # Core modules
+        self.ui = VoiceBarUI()
+        self.recorder = AudioRecorder(samplerate=16000, channels=1)
+        self.transcriber = TranscriberThread(model_name="medium", language="fr")
+        self.hotkeys = HotkeyListener()
+        
+        # State
+        self.is_recording = False
+        
+        self._setup_connections()
+        self._setup_tray()
+        
+        # Start initial UI state and show
+        self.ui.set_state_idle()
+        self.ui.show()
+        
+        # Load whisper in background so UI opens instantly
+        threading.Thread(target=self.transcriber.load_model, daemon=True).start()
+        
+        # Start hotkeys
+        self.hotkeys.register()
+        
+        # Poll UI for audio amplitude when recording
+        self.amp_timer = QTimer()
+        self.amp_timer.timeout.connect(self._sync_amplitude_to_ui)
+        self.amp_timer.start(30) # ~33fps
+        
+    def _create_tray_icon(self) -> QIcon:
+        # Create a simple black 16x16 icon programmatically
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        from PyQt6.QtGui import QPainter, QBrush
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QBrush(QColor(10, 10, 10)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, 16, 16, 8, 8)
+        
+        # Inner white pill
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawRoundedRect(4, 7, 8, 2, 1, 1)
+        
+        painter.end()
+        return QIcon(pixmap)
+
+    def _setup_tray(self):
+        self.tray = QSystemTrayIcon(self._create_tray_icon(), self.app)
+        self.tray.setToolTip("Claudio - Voice to Text")
+        
+        menu = QMenu()
+        quit_action = menu.addAction("Quit Claudio")
+        quit_action.triggered.connect(self.quit)
+        
+        self.tray.setContextMenu(menu)
+        self.tray.show()
+
+    def _setup_connections(self):
+        # Hotkeys -> Controller
+        self.hotkeys.toggle_record_signal.connect(self.toggle_recording)
+        self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
+        
+        # Transcriber -> Controller
+        self.transcriber.finished_transcription.connect(self._on_transcription_finished)
+
+    def toggle_recording(self):
+        """Called by Ctrl+Space."""
+        if not self.is_recording:
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    def _start_recording(self):
+        if not self.transcriber.is_loaded():
+            print("Whisper model is still loading, please wait...")
+            if getattr(self.transcriber, '_load_error', False):
+                self.tray.showMessage("Claudio", "Error loading Whisper model. Check your internet connection for the first download.", QSystemTrayIcon.MessageIcon.Critical)
+            else:
+                self.tray.showMessage("Claudio", "The AI model is still downloading/loading. Please wait...", QSystemTrayIcon.MessageIcon.Information)
+            self.ui.set_state_error()
+            return
+            
+        success = self.recorder.start()
+        if success:
+            self.is_recording = True
+            self.ui.set_state_recording()
+        else:
+            self.tray.showMessage("Claudio", "Microphone error! Could not start recording.", QSystemTrayIcon.MessageIcon.Critical)
+            self.ui.set_state_error()
+
+    def _stop_recording(self):
+        self.is_recording = False
+        self.ui.set_state_processing()
+        audio_data = self.recorder.stop()
+        
+        if len(audio_data) > 0:
+            self.transcriber.set_audio(audio_data)
+            self.transcriber.start() # starts the QThread
+        else:
+            self.ui.set_state_idle()
+
+    def cancel_recording(self):
+        """Called by Escape."""
+        if self.is_recording:
+            self.is_recording = False
+            self.recorder.stop()
+            self.ui.set_state_idle()
+
+    def _on_transcription_finished(self, text: str):
+        """Called when Whisper QThread completes."""
+        if text:
+            # Delegate to our paste logic
+            copy_and_paste(text)
+            
+        self.ui.set_state_idle()
+        
+    def _sync_amplitude_to_ui(self):
+        """Timer callback to fetch recent volume block and feed it to the UI."""
+        if self.is_recording and self.ui.state == UIState.RECORDING:
+            amp = self.recorder.get_current_amplitude()
+            self.ui.update_amplitude(amp)
+
+    def quit(self):
+        self.hotkeys.unregister()
+        if self.is_recording:
+            self.recorder.stop()
+        self.tray.hide()
+        self.app.quit()
+
+    def run(self):
+        return self.app.exec()
+
+if __name__ == "__main__":
+    app = ClaudioApp()
+    sys.exit(app.run())

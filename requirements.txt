@@ -1,0 +1,9 @@
+openai-whisper
+sounddevice
+PyQt6
+pyperclip
+pyautogui
+keyboard
+numpy
+torch
+pywin32
