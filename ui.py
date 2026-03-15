@@ -13,9 +13,9 @@ class UIState(Enum):
 
 
 # Target sizes for each state
-_IDLE_W, _IDLE_H = 40.0, 6.0
+_IDLE_W, _IDLE_H = 40.0, 12.0
 _RECORDING_W, _RECORDING_H = 120.0, 32.0
-_PROCESSING_W, _PROCESSING_H = 40.0, 6.0
+_PROCESSING_W, _PROCESSING_H = 40.0, 12.0
 
 # Container window — must be large enough to hold the expanded bar + shadow room
 _CONTAINER_W = 220
@@ -74,6 +74,13 @@ class VoiceBarUI(QWidget):
         self.error_timer = QTimer(self)
         self.error_timer.setSingleShot(True)
         self.error_timer.timeout.connect(self._reset_error)
+
+        # --- Hover glow ---
+        self._hover_opacity = 0.0   # 0.0 = not hovered, 1.0 = fully hovered
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(16)  # ~60 fps
+        self._hover_timer.timeout.connect(self._tick_hover)
+        self._hover_target = 0.0
 
         self._setup_window()
 
@@ -147,10 +154,14 @@ class VoiceBarUI(QWidget):
         self.update()
 
     def update_amplitude(self, amp: float):
-        """Called by main controller with raw RMS amplitude."""
-        scaled = min(1.0, amp * 12.0)
-        # Global smooth amplitude (used for target heights)
-        self.current_amplitude = (self.current_amplitude * 0.6) + (scaled * 0.4)
+        """Called by main controller with raw RMS amplitude.
+
+        Uses a power-curve so that normal speech (RMS ~0.01-0.03) maps to
+        60-80% of waveform height instead of ~15%.
+        """
+        # x^0.35 compresses the dynamic range — quiet sounds get amplified more
+        scaled = min(1.0, (amp ** 0.35) * 3.5) if amp > 0 else 0.0
+        self.current_amplitude = (self.current_amplitude * 0.55) + (scaled * 0.45)
 
     def _tick_waveform(self):
         """Called at ~33 fps. Updates each bar's smooth height, then repaints."""
@@ -194,6 +205,27 @@ class VoiceBarUI(QWidget):
             self._dragging = False
             self._drag_offset = None
         super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event):
+        """Mouse entered — start fade-in of white border."""
+        self._hover_target = 1.0
+        self._hover_timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Mouse left — start fade-out of white border."""
+        self._hover_target = 0.0
+        self._hover_timer.start()
+        super().leaveEvent(event)
+
+    def _tick_hover(self):
+        """Smooth hover opacity interpolation at ~60 fps."""
+        speed = 0.12
+        self._hover_opacity += (self._hover_target - self._hover_opacity) * speed
+        if abs(self._hover_opacity - self._hover_target) < 0.005:
+            self._hover_opacity = self._hover_target
+            self._hover_timer.stop()
+        self.update()
 
     # ------------------------------------------------------------------ #
     # Internal animation helpers                                           #
@@ -270,6 +302,18 @@ class VoiceBarUI(QWidget):
         painter.setBrush(QBrush(bg))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, radius, radius)
+
+        # White hover border — fades in on mouse-over
+        if self._hover_opacity > 0.002:
+            border_alpha = int(self._hover_opacity * 180)
+            pen = QPen(QColor(255, 255, 255, border_alpha))
+            pen.setWidthF(1.2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            # Inset by half the pen width so the stroke stays inside the pill
+            inset = 0.6
+            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), radius - inset, radius - inset)
+
 
     def _draw_state_overlay(self, painter: QPainter, rect: QRectF,
                              cx: float, cy: float, w: float, h: float):
