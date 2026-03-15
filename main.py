@@ -46,27 +46,12 @@ class ClaudioApp:
         self.amp_timer.timeout.connect(self._sync_amplitude_to_ui)
         self.amp_timer.start(30) # ~33fps
         
-    def _create_tray_icon(self) -> QIcon:
-        # Create a simple black 16x16 icon programmatically
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        
-        from PyQt6.QtGui import QPainter, QBrush
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QBrush(QColor(10, 10, 10)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(0, 0, 16, 16, 8, 8)
-        
-        # Inner white pill
-        painter.setBrush(QBrush(QColor(255, 255, 255)))
-        painter.drawRoundedRect(4, 7, 8, 2, 1, 1)
-        
-        painter.end()
-        return QIcon(pixmap)
-
     def _setup_tray(self):
-        self.tray = QSystemTrayIcon(self._create_tray_icon(), self.app)
+        icon = QIcon("icon.ico")
+        self.app.setWindowIcon(icon)
+        self.ui.setWindowIcon(icon)
+        
+        self.tray = QSystemTrayIcon(icon, self.app)
         self.tray.setToolTip("Claudio - Voice to Text")
         
         menu = QMenu()
