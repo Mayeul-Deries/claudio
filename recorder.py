@@ -3,6 +3,26 @@ import sys
 import numpy as np
 import sounddevice as sd
 
+def _pick_input_device() -> int | None:
+    """Find the best microphone device.
+
+    Priority:
+    1. SteelSeries Arctis (user's actual headset mic)
+    2. Realtek built-in mic
+    3. None → sounddevice system default
+    """
+    import sounddevice as sd
+    devices = sd.query_devices()
+    preferred = ["steelseries arctis", "realtek"]
+    for keyword in preferred:
+        for i, d in enumerate(devices):
+            if d['max_input_channels'] > 0 and keyword in d['name'].lower():
+                print(f"[Recorder] Selected input device [{i}]: {d['name']}", file=sys.stderr)
+                return i
+    print("[Recorder] Falling back to system default input device.", file=sys.stderr)
+    return None
+
+
 class AudioRecorder:
     def __init__(self, samplerate=16000, channels=1):
         self.samplerate = samplerate
@@ -32,6 +52,7 @@ class AudioRecorder:
                 samplerate=self.samplerate,
                 channels=self.channels,
                 dtype='float32',
+                device=_pick_input_device(),
                 callback=self._audio_callback
             )
             self.stream.start()

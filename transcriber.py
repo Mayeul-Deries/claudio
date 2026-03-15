@@ -1,3 +1,9 @@
+"""Whisper transcription module.
+
+Keeps the model loaded in memory between calls.
+Each transcription runs in a fresh QThread to avoid the
+QThread.start()-after-finished no-op bug.
+"""
 import sys
 import numpy as np
 import torch
@@ -8,67 +14,104 @@ from PyQt6.QtCore import QThread, pyqtSignal
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[Claudio] Using device: {_DEVICE}", file=sys.stderr)
 
-class TranscriberThread(QThread):
+
+class _InferenceThread(QThread):
+    """Single-use thread that runs one whisper transcription then terminates."""
     finished_transcription = pyqtSignal(str)
-    
-    def __init__(self, model_name="medium", language="fr"):
+
+    def __init__(self, model, audio_data: np.ndarray, language: str):
         super().__init__()
-        self.model_name = model_name
-        self.language = language
-        self.model = None
-        self.audio_data = None
-        self._is_loading = False
-
-    def load_model(self):
-        """Load the model synchronously. Best called duriL'abonnement pro est un abonnement payant pour notre service de chat Claude. Il est actuellement disponible dans certaines régions prises en charge. Les avantages du forfait pro sont les suivants. Au moins 5 fois plus d'utilisation par session que notre service gratuit. Accès prioritaire à Claude pendant les périodes de forte influence. À la ligne accès anticipé aux nouvelles fonctionnalités qui vous permettront de tirer le meilleur parti de Claude. Tirer possibilité de choisir un autre modèle avec le sélecteur de modèle. Tirer accès au projet et aux bases de connaissance. À la ligne tirer accès à Claude Code. À la ligne tirer accès à l'aperçu de recherche Cowork.ng app startup."""
-        if not self.model and not self._is_loading:
-            self._is_loading = True
-            self._load_error = False
-            print(f"Loading Whisper model '{self.model_name}'...", file=sys.stderr)
-            try:
-                self.model = whisper.load_model(self.model_name, device=_DEVICE)
-                print(f"Model loaded on {_DEVICE}.", file=sys.stderr)
-            except Exception as e:
-                self._load_error = True
-                print(f"Failed to load Whisper model: {e}", file=sys.stderr)
-            finally:
-                self._is_loading = False
-                
-    def is_loaded(self):
-        return self.model is not None
-
-    def set_audio(self, audio_data: np.ndarray):
-        """Set the audio data to be transcribed."""
-        self.audio_data = audio_data
+        self._model = model
+        self._audio_data = audio_data
+        self._language = language
 
     def run(self):
-        """Execute the transcription in a background thread."""
-        if not self.model:
-            print("Model not loaded yet. Loading now...", file=sys.stderr)
-            self.load_model()
-            
-        if not self.audio_data is not None or len(self.audio_data) == 0:
-            self.finished_transcription.emit("")
-            return
-
         print("Starting transcription...", file=sys.stderr)
         try:
-            # Whisper expects 16kHz float32 between -1 and 1
-            # Ensure float32 (already done in recorder, but verifying)
-            audio = self.audio_data.astype(np.float32)
-            
-            # Normalize if needed, though whisper.transcribe can handle raw inputs
-            # Run inference
-            result = self.model.transcribe(
-                audio, 
-                language=self.language,
-                fp16=False # GTX 1660 Ti (Turing) has broken FP16 — use FP32 on CUDA (still ~5x faster than CPU)
+            audio = self._audio_data.astype(np.float32)
+
+            # === DEBUG ===
+            duration = len(audio) / 16000
+            rms = float(np.sqrt(np.mean(np.square(audio))))
+            print(f"[DEBUG] audio: {len(audio)} samples, {duration:.1f}s, RMS={rms:.5f}", file=sys.stderr)
+            # =============
+
+            result = self._model.transcribe(
+                audio,
+                language=self._language,
+                fp16=False,  # GTX 1660 Ti (Turing) has broken FP16
             )
-            
-            transcribed_text = result.get("text", "").strip()
-            print(f"Transcription complete: '{transcribed_text}'", file=sys.stderr)
-            self.finished_transcription.emit(transcribed_text)
-            
+
+            # === DEBUG ===
+            print(f"[DEBUG] raw result segments: {result.get('segments', [])}", file=sys.stderr)
+            # =============
+
+            text = result.get("text", "").strip()
+            print(f"Transcription complete: '{text}'", file=sys.stderr)
+            self.finished_transcription.emit(text)
         except Exception as e:
             print(f"Transcription error: {e}", file=sys.stderr)
             self.finished_transcription.emit("")
+
+
+class TranscriberThread:
+    """Owns the Whisper model and spawns a fresh _InferenceThread per call."""
+
+    finished_transcription: pyqtSignal  # exposed so main.py can connect
+
+    def __init__(self, model_name: str = "medium", language: str = "fr"):
+        self.model_name = model_name
+        self.language = language
+        self.model = None
+        self._is_loading = False
+        self._load_error = False
+        # Keep a ref to the current thread so it isn't garbage-collected mid-run
+        self._active_thread: _InferenceThread | None = None
+        # Expose a dummy pyqtSignal target so main.py connect() works
+        # The real signal comes from _InferenceThread; we proxy it via a callback
+        self._on_done_callback = None
+
+    # ------------------------------------------------------------------ #
+    # Model loading                                                        #
+    # ------------------------------------------------------------------ #
+
+    def load_model(self):
+        """Load the Whisper model synchronously. Call from a background thread."""
+        if self.model is not None or self._is_loading:
+            return
+        self._is_loading = True
+        self._load_error = False
+        print(f"Loading Whisper model '{self.model_name}'...", file=sys.stderr)
+        try:
+            self.model = whisper.load_model(self.model_name, device=_DEVICE)
+            print(f"Model loaded on {_DEVICE}.", file=sys.stderr)
+        except Exception as e:
+            self._load_error = True
+            print(f"Failed to load Whisper model: {e}", file=sys.stderr)
+        finally:
+            self._is_loading = False
+
+    def is_loaded(self) -> bool:
+        return self.model is not None
+
+    # ------------------------------------------------------------------ #
+    # Transcription                                                        #
+    # ------------------------------------------------------------------ #
+
+    def transcribe(self, audio_data: np.ndarray, callback):
+        """Start transcription in a fresh background thread.
+
+        Args:
+            audio_data: 16 kHz float32 mono numpy array.
+            callback: callable(str) invoked on the Qt thread when done.
+        """
+        if self.model is None:
+            print("Model not loaded — cannot transcribe.", file=sys.stderr)
+            callback("")
+            return
+
+        thread = _InferenceThread(self.model, audio_data, self.language)
+        thread.finished_transcription.connect(callback)
+        # Hold a reference so the GC doesn't collect the thread object
+        self._active_thread = thread
+        thread.start()

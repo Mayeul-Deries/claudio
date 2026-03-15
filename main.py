@@ -80,9 +80,7 @@ class ClaudioApp:
         # Hotkeys -> Controller
         self.hotkeys.toggle_record_signal.connect(self.toggle_recording)
         self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
-        
-        # Transcriber -> Controller
-        self.transcriber.finished_transcription.connect(self._on_transcription_finished)
+        # Note: transcriber fires callback directly — no persistent signal to connect here
 
     def toggle_recording(self):
         """Called by Ctrl+Space."""
@@ -113,10 +111,10 @@ class ClaudioApp:
         self.is_recording = False
         self.ui.set_state_processing()
         audio_data = self.recorder.stop()
-        
-        if len(audio_data) > 0:
-            self.transcriber.set_audio(audio_data)
-            self.transcriber.start() # starts the QThread
+
+        if audio_data is not None and len(audio_data) > 0:
+            # Each call creates a fresh background thread — no re-start issue
+            self.transcriber.transcribe(audio_data, self._on_transcription_finished)
         else:
             self.ui.set_state_idle()
 
