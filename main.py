@@ -61,11 +61,12 @@ class ClaudioApp:
         self.tray.setContextMenu(menu)
         self.tray.show()
 
-    def _setup_connections(self):
         # Hotkeys -> Controller
         self.hotkeys.toggle_record_signal.connect(self.toggle_recording)
         self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
-        # Note: transcriber fires callback directly — no persistent signal to connect here
+        
+        # UI (Wake-up) -> Controller
+        self.ui.system_wake_signal.connect(self._on_system_wake)
 
     def toggle_recording(self):
         """Called by Ctrl+Space."""
@@ -123,6 +124,11 @@ class ClaudioApp:
         if self.is_recording and self.ui.state == UIState.RECORDING:
             amp = self.recorder.get_current_amplitude()
             self.ui.update_amplitude(amp)
+
+    def _on_system_wake(self):
+        """Called when system wakes from sleep."""
+        print("Claudio: Refreshing hotkeys due to system wake event.", file=sys.stderr)
+        self.hotkeys.refresh()
 
     def quit(self):
         self.hotkeys.unregister()

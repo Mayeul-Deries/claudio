@@ -21,10 +21,13 @@ class HotkeyListener(QObject):
         """Callback for the cancel hotkey."""
         self.cancel_record_signal.emit()
 
-    def register(self):
+    def register(self, force=False):
         """Register the global hotkeys. Requires admin privileges on some systems."""
-        if self._registered:
+        if self._registered and not force:
             return
+            
+        if force and self._registered:
+            self.unregister()
             
         try:
             keyboard.add_hotkey(self.start_stop_hotkey, self._on_toggle, suppress=True)
@@ -46,3 +49,8 @@ class HotkeyListener(QObject):
             self._registered = False
         except Exception as e:
             print(f"Failed to unregister hotkeys: {e}", file=sys.stderr)
+
+    def refresh(self):
+        """Unregister and re-register hotkeys."""
+        print("Refreshing hotkeys...", file=sys.stderr)
+        self.register(force=True)
