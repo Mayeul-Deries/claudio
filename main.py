@@ -127,7 +127,19 @@ class ClaudioApp:
 
     def _on_system_wake(self):
         """Called when system wakes from sleep."""
-        print("Claudio: Refreshing hotkeys due to system wake event.", file=sys.stderr)
+        print("Claudio: Refreshing hotkeys and UI due to system wake event.", file=sys.stderr)
+        
+        # Ensure UI is visible
+        self.ui.show()
+        self.ui.raise_()
+        self.ui.activateWindow()
+        
+        # Re-center UI. We do it twice: once immediately and once after a delay 
+        # to handle cases where screen geometry isn't stable yet.
+        self.ui._center_on_screen()
+        QTimer.singleShot(500, self.ui._center_on_screen)
+        
+        # Refresh hotkeys
         self.hotkeys.refresh()
 
     def quit(self):
