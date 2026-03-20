@@ -1,7 +1,7 @@
 import math
 from enum import Enum
 from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtCore import Qt, QPropertyAnimation, QTimer, pyqtProperty, QRectF, QPointF, QEasingCurve, pyqtSignal
+from PyQt6.QtCore import Qt, QPropertyAnimation, QTimer, pyqtProperty, QRectF, QPointF, QEasingCurve, pyqtSignal, QParallelAnimationGroup
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QPainterPath
 
 
@@ -45,6 +45,8 @@ class VoiceBarUI(QWidget):
         # --- Animation objects (kept as instance vars to prevent GC) ---
         self.anim_w = None
         self.anim_h = None
+        self.anim_group = None
+        self._global_scale = 1.0
 
         # --- Waveform: 5 bars, each independently animated ---
         self.current_amplitude = 0.0
@@ -132,6 +134,15 @@ class VoiceBarUI(QWidget):
     @barHeight.setter
     def barHeight(self, v):
         self._bar_height = v
+        self.update()
+
+    @pyqtProperty(float)
+    def globalScale(self):
+        return self._global_scale
+
+    @globalScale.setter
+    def globalScale(self, v):
+        self._global_scale = v
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -317,6 +328,48 @@ class VoiceBarUI(QWidget):
         self._error_flash_opacity = 0.0
         self.set_state_idle()
 
+    def minimize_animated(self):
+        """Play a smooth shrink-to-zero and fade-out animation like iOS."""
+        self.anim_group = QParallelAnimationGroup()
+        
+        anim_s = QPropertyAnimation(self, b"globalScale")
+        anim_s.setEndValue(0.0)
+        anim_s.setDuration(250)
+        anim_s.setEasingCurve(QEasingCurve.Type.InBack)
+        
+        anim_o = QPropertyAnimation(self, b"windowOpacity")
+        anim_o.setEndValue(0.0)
+        anim_o.setDuration(200)
+        
+        self.anim_group.addAnimation(anim_s)
+        self.anim_group.addAnimation(anim_o)
+        
+        self.anim_group.finished.connect(self.hide)
+        self.anim_group.start()
+
+    def show_animated(self):
+        """Play a smooth pop-out and fade-in animation."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        self.anim_group = QParallelAnimationGroup()
+        
+        anim_s = QPropertyAnimation(self, b"globalScale")
+        anim_s.setStartValue(self._global_scale)
+        anim_s.setEndValue(1.0)
+        anim_s.setDuration(350)
+        anim_s.setEasingCurve(QEasingCurve.Type.OutBack)
+        
+        anim_o = QPropertyAnimation(self, b"windowOpacity")
+        anim_o.setStartValue(self.windowOpacity() if self.windowOpacity() > 0.0 else 0.0)
+        anim_o.setEndValue(1.0)
+        anim_o.setDuration(200)
+        
+        self.anim_group.addAnimation(anim_s)
+        self.anim_group.addAnimation(anim_o)
+        self.anim_group.start()
+
     # ------------------------------------------------------------------ #
     # Painting                                                            #
     # ------------------------------------------------------------------ #
@@ -328,8 +381,12 @@ class VoiceBarUI(QWidget):
         cx = self.width() / 2
         cy = self.height() / 2
         
-        # Apply a smooth "bump" scale based on hover
-        scale = 1.0 + (0.05 * self._hover_opacity) # Scales from 1.0 to 1.05
+        # Apply a smooth "bump" scale based on hover, combined with global animated scale
+        scale = (1.0 + (0.05 * self._hover_opacity)) * self._global_scale
+        
+        if scale <= 0.01:
+            return # Don't draw if fully minimized
+            
         painter.translate(cx, cy)
         painter.scale(scale, scale)
         painter.translate(-cx, -cy)

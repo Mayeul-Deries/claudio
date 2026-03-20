@@ -80,15 +80,13 @@ class ClaudioApp:
         self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
         
         # UI -> Controller
-        self.ui.minimize_signal.connect(self.ui.hide)
+        self.ui.minimize_signal.connect(self.ui.minimize_animated)
         
         # Note: transcriber fires callback directly — no persistent signal to connect here
 
     def show_ui(self):
-        """Restore the UI visibility."""
-        self.ui.show()
-        self.ui.raise_()
-        self.ui.activateWindow()
+        """Restore the UI visibility with animation."""
+        self.ui.show_animated()
 
     def toggle_recording(self):
         """Called by Ctrl+Space."""
