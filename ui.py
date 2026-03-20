@@ -40,6 +40,7 @@ class VoiceBarUI(QWidget):
         self._drag_offset = None   # QPoint when dragging
         self._dragging = False
         self._min_btn_rect = None  # Rect of the minimize button for clicks
+        self._is_btn_hovered = False # Is mouse strictly over the red button?
 
         # --- Animation objects (kept as instance vars to prevent GC) ---
         self.anim_w = None
@@ -85,6 +86,13 @@ class VoiceBarUI(QWidget):
         self._hover_timer.timeout.connect(self._tick_hover)
         self._hover_target = 0.0
 
+        # --- Button Hover animation ---
+        self._btn_hover_opacity = 0.0
+        self._btn_hover_target = 0.0
+        self._btn_hover_timer = QTimer(self)
+        self._btn_hover_timer.setInterval(16)
+        self._btn_hover_timer.timeout.connect(self._tick_btn_hover)
+
         self._setup_window()
 
     def _setup_window(self):
@@ -94,6 +102,7 @@ class VoiceBarUI(QWidget):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True) # Needed to track hover over the small button
         self.setFixedSize(_CONTAINER_W, _CONTAINER_H)
         self._center_on_screen()
 
@@ -206,6 +215,22 @@ class VoiceBarUI(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        pos = event.position()
+        
+        # Check if we are hovering specifically over the minimize button
+        if self._min_btn_rect is not None:
+            was_btn_hovered = self._is_btn_hovered
+            self._is_btn_hovered = self._min_btn_rect.contains(pos)
+            if was_btn_hovered != self._is_btn_hovered:
+                if self._is_btn_hovered:
+                    self.setCursor(Qt.CursorShape.PointingHandCursor)
+                    self._btn_hover_target = 1.0
+                else:
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
+                    self._btn_hover_target = 0.0
+                self._btn_hover_timer.start()
+                self.update()
+
         if self._dragging and self._drag_offset is not None:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
@@ -217,13 +242,18 @@ class VoiceBarUI(QWidget):
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
-        """Mouse entered — start fade-in of white border."""
+        """Mouse entered — start bump animation."""
         self._hover_target = 1.0
         self._hover_timer.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        """Mouse left — start fade-out of white border."""
+        """Mouse left — start bump reverse animation and restore cursor."""
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._is_btn_hovered = False
+        self._btn_hover_target = 0.0
+        self._btn_hover_timer.start()
+        
         self._hover_target = 0.0
         self._hover_timer.start()
         super().leaveEvent(event)
@@ -235,6 +265,15 @@ class VoiceBarUI(QWidget):
         if abs(self._hover_opacity - self._hover_target) < 0.005:
             self._hover_opacity = self._hover_target
             self._hover_timer.stop()
+        self.update()
+
+    def _tick_btn_hover(self):
+        """Smooth animation for the minus button icon."""
+        speed = 0.15
+        self._btn_hover_opacity += (self._btn_hover_target - self._btn_hover_opacity) * speed
+        if abs(self._btn_hover_opacity - self._btn_hover_target) < 0.005:
+            self._btn_hover_opacity = self._btn_hover_target
+            self._btn_hover_timer.stop()
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -288,6 +327,13 @@ class VoiceBarUI(QWidget):
 
         cx = self.width() / 2
         cy = self.height() / 2
+        
+        # Apply a smooth "bump" scale based on hover
+        scale = 1.0 + (0.05 * self._hover_opacity) # Scales from 1.0 to 1.05
+        painter.translate(cx, cy)
+        painter.scale(scale, scale)
+        painter.translate(-cx, -cy)
+
         w = self._bar_width
         h = self._bar_height
         rect = QRectF(cx - w / 2, cy - h / 2, w, h)
@@ -313,9 +359,11 @@ class VoiceBarUI(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self._min_btn_rect)
         
-        # Draw minus sign
-        painter.setPen(QPen(QColor(0, 0, 0, int(150 * self._hover_opacity)), 1.5))
-        painter.drawLine(QPointF(btn_cx - 3, btn_cy), QPointF(btn_cx + 3, btn_cy))
+        # Draw minus sign ONLY fluidly animating on hover
+        if self._btn_hover_opacity > 0.01:
+            combined_opacity = self._hover_opacity * self._btn_hover_opacity
+            painter.setPen(QPen(QColor(0, 0, 0, int(150 * combined_opacity)), 1.5))
+            painter.drawLine(QPointF(btn_cx - 3, btn_cy), QPointF(btn_cx + 3, btn_cy))
         
         painter.setOpacity(1.0)
 
@@ -335,17 +383,6 @@ class VoiceBarUI(QWidget):
         painter.setBrush(QBrush(bg))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, radius, radius)
-
-        # White hover border — fades in on mouse-over
-        if self._hover_opacity > 0.002:
-            border_alpha = int(self._hover_opacity * 180)
-            pen = QPen(QColor(255, 255, 255, border_alpha))
-            pen.setWidthF(1.2)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            # Inset by half the pen width so the stroke stays inside the pill
-            inset = 0.6
-            painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), radius - inset, radius - inset)
 
 
     def _draw_state_overlay(self, painter: QPainter, rect: QRectF,
