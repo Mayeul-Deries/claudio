@@ -7,12 +7,13 @@ QThread.start()-after-finished no-op bug.
 import sys
 import numpy as np
 import torch
-import whisper
+from faster_whisper import WhisperModel
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Use GPU if available, otherwise fall back silently to CPU
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[Claudio] Using device: {_DEVICE}", file=sys.stderr)
+_COMPUTE_TYPE = "float32" if _DEVICE == "cuda" else "int8"
+print(f"[Claudio] Using device: {_DEVICE} with compute_type: {_COMPUTE_TYPE}", file=sys.stderr)
 
 
 class _InferenceThread(QThread):
@@ -36,17 +37,22 @@ class _InferenceThread(QThread):
             print(f"[DEBUG] audio: {len(audio)} samples, {duration:.1f}s, RMS={rms:.5f}", file=sys.stderr)
             # =============
 
-            result = self._model.transcribe(
+            segments, info = self._model.transcribe(
                 audio,
                 language=self._language,
-                fp16=False,  # GTX 1660 Ti (Turing) has broken FP16
+                beam_size=5
             )
 
-            # === DEBUG ===
-            print(f"[DEBUG] raw result segments: {result.get('segments', [])}", file=sys.stderr)
-            # =============
+            # Consume the generator
+            text_parts = []
+            for segment in segments:
+                text_parts.append(segment.text)
+                
+            text = " ".join(text_parts).strip()
 
-            text = result.get("text", "").strip()
+            # === DEBUG ===
+            print(f"[DEBUG] info: language={info.language}, prob={info.language_probability:.3f}", file=sys.stderr)
+            # =============
             print(f"Transcription complete: '{text}'", file=sys.stderr)
             self.finished_transcription.emit(text)
         except Exception as e:
@@ -83,7 +89,7 @@ class TranscriberThread:
         self._load_error = False
         print(f"Loading Whisper model '{self.model_name}'...", file=sys.stderr)
         try:
-            self.model = whisper.load_model(self.model_name, device=_DEVICE)
+            self.model = WhisperModel(self.model_name, device=_DEVICE, compute_type=_COMPUTE_TYPE)
             print(f"Model loaded on {_DEVICE}.", file=sys.stderr)
         except Exception as e:
             self._load_error = True
