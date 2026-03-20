@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "C:\Users\mayeu\Desktop\mes-projets\claudio\main.py", line 3, in <module>
-    from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
-ModuleNotFoundError: No module named 'PyQt6'
