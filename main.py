@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 
 # IMPORTANT: On Windows, PyTorch (imported via Whisper in transcriber) must be 
 # imported BEFORE PyQt6, otherwise it causes an OSError: [WinError 1114] DLL init failed.
@@ -46,6 +47,14 @@ class ClaudioApp:
         self.amp_timer.timeout.connect(self._sync_amplitude_to_ui)
         self.amp_timer.start(30) # ~33fps
         
+        # Safe Wake-up Detection (Timer-based)
+        # We check the time every 5 seconds. If the difference is significantly
+        # larger (e.g. > 15s), the system likely slept.
+        self.last_check_time = time.time()
+        self.wake_timer = QTimer()
+        self.wake_timer.timeout.connect(self._check_system_wake)
+        self.wake_timer.start(5000) # 5 seconds
+        
     def _setup_tray(self):
         icon = QIcon("icon.ico")
         self.app.setWindowIcon(icon)
@@ -61,12 +70,11 @@ class ClaudioApp:
         self.tray.setContextMenu(menu)
         self.tray.show()
 
+    def _setup_connections(self):
         # Hotkeys -> Controller
         self.hotkeys.toggle_record_signal.connect(self.toggle_recording)
         self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
-        
-        # UI (Wake-up) -> Controller
-        self.ui.system_wake_signal.connect(self._on_system_wake)
+        # Note: transcriber fires callback directly — no persistent signal to connect here
 
     def toggle_recording(self):
         """Called by Ctrl+Space."""
@@ -125,22 +133,27 @@ class ClaudioApp:
             amp = self.recorder.get_current_amplitude()
             self.ui.update_amplitude(amp)
 
-    def _on_system_wake(self):
-        """Called when system wakes from sleep."""
-        print("Claudio: Refreshing hotkeys and UI due to system wake event.", file=sys.stderr)
+    def _check_system_wake(self):
+        """Timer callback to detect if the system went to sleep."""
+        current_time = time.time()
+        time_diff = current_time - self.last_check_time
+        self.last_check_time = current_time
         
-        # Ensure UI is visible
-        self.ui.show()
-        self.ui.raise_()
-        self.ui.activateWindow()
-        
-        # Re-center UI. We do it twice: once immediately and once after a delay 
-        # to handle cases where screen geometry isn't stable yet.
-        self.ui._center_on_screen()
-        QTimer.singleShot(500, self.ui._center_on_screen)
-        
-        # Refresh hotkeys
-        self.hotkeys.refresh()
+        # If the timer hasn't fired for > 15 seconds, we assume the PC was asleep
+        if time_diff > 15.0:
+            print(f"Claudio: System wake-up detected! (Time jump: {time_diff:.1f}s)", file=sys.stderr)
+            
+            # Ensure UI is visible
+            self.ui.show()
+            self.ui.raise_()
+            self.ui.activateWindow()
+            
+            # Re-center UI twice to handle geometry stabilisation
+            self.ui._center_on_screen()
+            QTimer.singleShot(500, self.ui._center_on_screen)
+            
+            # Refresh hotkeys
+            self.hotkeys.refresh()
 
     def quit(self):
         self.hotkeys.unregister()

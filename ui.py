@@ -4,13 +4,6 @@ from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QPropertyAnimation, QTimer, pyqtProperty, QRectF, QPointF, QEasingCurve, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient, QPainterPath
 
-# Windows-specific power management constants
-try:
-    import win32con
-    import win32gui
-    HAS_WIN32 = True
-except ImportError:
-    HAS_WIN32 = False
 
 
 class UIState(Enum):
@@ -31,7 +24,6 @@ _CONTAINER_H = 56
 
 
 class VoiceBarUI(QWidget):
-    system_wake_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -395,14 +387,3 @@ class VoiceBarUI(QWidget):
         painter.setBrush(QBrush(grad))
         painter.drawRoundedRect(rect, radius, radius)
 
-    def nativeEvent(self, event_type, message):
-        """Handle native Windows events to detect system wake-up."""
-        if HAS_WIN32 and event_type == b'windows_generic_MSG':
-            msg = win32gui.PyGetMessage(message)
-            # WM_POWERBROADCAST = 0x218
-            if msg.message == 0x218:
-                # PBT_APMRESUMESUSPEND = 0x7
-                if msg.wParam == 0x7:
-                    print("System wake-up detected in UI", file=sys.stderr)
-                    self.system_wake_signal.emit()
-        return super().nativeEvent(event_type, message)
