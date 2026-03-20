@@ -64,6 +64,10 @@ class ClaudioApp:
         self.tray.setToolTip("Claudio - Voice to Text")
         
         menu = QMenu()
+        show_action = menu.addAction("Afficher l'interface")
+        show_action.triggered.connect(self.show_ui)
+        menu.addSeparator()
+        
         quit_action = menu.addAction("Quit Claudio")
         quit_action.triggered.connect(self.quit)
         
@@ -74,10 +78,23 @@ class ClaudioApp:
         # Hotkeys -> Controller
         self.hotkeys.toggle_record_signal.connect(self.toggle_recording)
         self.hotkeys.cancel_record_signal.connect(self.cancel_recording)
+        
+        # UI -> Controller
+        self.ui.minimize_signal.connect(self.ui.hide)
+        
         # Note: transcriber fires callback directly — no persistent signal to connect here
+
+    def show_ui(self):
+        """Restore the UI visibility."""
+        self.ui.show()
+        self.ui.raise_()
+        self.ui.activateWindow()
 
     def toggle_recording(self):
         """Called by Ctrl+Space."""
+        if self.ui.isHidden():
+            self.show_ui()
+            
         if not self.is_recording:
             self._start_recording()
         else:

@@ -14,16 +14,17 @@ class UIState(Enum):
 
 
 # Target sizes for each state
-_IDLE_W, _IDLE_H = 40.0, 12.0
-_RECORDING_W, _RECORDING_H = 120.0, 32.0
-_PROCESSING_W, _PROCESSING_H = 40.0, 12.0
+_IDLE_W, _IDLE_H = 60.0, 16.0
+_RECORDING_W, _RECORDING_H = 160.0, 44.0
+_PROCESSING_W, _PROCESSING_H = 60.0, 16.0
 
 # Container window — must be large enough to hold the expanded bar + shadow room
-_CONTAINER_W = 220
-_CONTAINER_H = 56
+_CONTAINER_W = 300
+_CONTAINER_H = 80
 
 
 class VoiceBarUI(QWidget):
+    minimize_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -35,9 +36,10 @@ class VoiceBarUI(QWidget):
         self._bar_width = _IDLE_W
         self._bar_height = _IDLE_H
 
-        # --- Drag state ---
+        # --- Drag & Click state ---
         self._drag_offset = None   # QPoint when dragging
         self._dragging = False
+        self._min_btn_rect = None  # Rect of the minimize button for clicks
 
         # --- Animation objects (kept as instance vars to prevent GC) ---
         self.anim_w = None
@@ -192,6 +194,13 @@ class VoiceBarUI(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            press_pos = event.position()
+            # Check if minimize button was clicked
+            if self._min_btn_rect is not None and self._hover_opacity > 0.1:
+                if self._min_btn_rect.contains(press_pos):
+                    self.minimize_signal.emit()
+                    return # Do not start dragging
+
             self._dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
@@ -286,6 +295,29 @@ class VoiceBarUI(QWidget):
 
         self._draw_background(painter, rect, radius)
         self._draw_state_overlay(painter, rect, cx, cy, w, h)
+        self._draw_minimize_button(painter, rect, radius)
+
+    def _draw_minimize_button(self, painter: QPainter, rect: QRectF, radius: float):
+        if self._hover_opacity <= 0.01:
+            self._min_btn_rect = None
+            return
+            
+        r = 6.0 # radius of the button
+        # Place it on the right side of the pill, securely inside the bounds
+        btn_cx = rect.right() - radius
+        btn_cy = rect.center().y()
+        self._min_btn_rect = QRectF(btn_cx - r, btn_cy - r, r*2, r*2)
+        
+        painter.setOpacity(self._hover_opacity)
+        painter.setBrush(QColor(255, 95, 86)) # Mac Red
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(self._min_btn_rect)
+        
+        # Draw minus sign
+        painter.setPen(QPen(QColor(0, 0, 0, int(150 * self._hover_opacity)), 1.5))
+        painter.drawLine(QPointF(btn_cx - 3, btn_cy), QPointF(btn_cx + 3, btn_cy))
+        
+        painter.setOpacity(1.0)
 
     def _draw_background(self, painter: QPainter, rect: QRectF, radius: float):
         # Soft drop shadow
