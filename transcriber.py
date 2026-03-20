@@ -46,7 +46,8 @@ class _InferenceThread(QThread):
             # Consume the generator
             text_parts = []
             for segment in segments:
-                text_parts.append(segment.text)
+                if segment.text:
+                    text_parts.append(segment.text.strip())
                 
             text = " ".join(text_parts).strip()
 
