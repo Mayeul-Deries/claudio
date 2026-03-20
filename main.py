@@ -8,7 +8,7 @@ from transcriber import TranscriberThread
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QPixmap, QColor
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSharedMemory
 
 from ui import VoiceBarUI, UIState
 from recorder import AudioRecorder
@@ -17,7 +17,7 @@ from hotkeys import HotkeyListener
 
 class ClaudioApp:
     def __init__(self):
-        self.app = QApplication(sys.argv)
+        self.app = QApplication.instance() or QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
         
         # Core modules
@@ -181,5 +181,20 @@ class ClaudioApp:
         return self.app.exec()
 
 if __name__ == "__main__":
+    app_instance = QApplication.instance() or QApplication(sys.argv)
+    
+    shared_mem = QSharedMemory("claudio_app_unique_lock")
+    if not shared_mem.create(1):
+        print("Claudio: An instance is already running. Exiting.", file=sys.stderr)
+        
+        # Try to show a native message box to inform the user
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, "Claudio est déjà lancé et actif.", "Claudio", 0x30 | 0x0)
+        except Exception:
+            pass
+            
+        sys.exit(0)
+
     app = ClaudioApp()
     sys.exit(app.run())
