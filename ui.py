@@ -25,6 +25,7 @@ _CONTAINER_H = 80
 
 class VoiceBarUI(QWidget):
     minimize_signal = pyqtSignal()
+    settings_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -41,6 +42,9 @@ class VoiceBarUI(QWidget):
         self._dragging = False
         self._min_btn_rect = None  # Rect of the minimize button for clicks
         self._is_btn_hovered = False # Is mouse strictly over the red button?
+        
+        self._settings_btn_rect = None # Rect of the settings button
+        self._is_settings_btn_hovered = False
 
         # --- Animation objects (kept as instance vars to prevent GC) ---
         self.anim_w = None
@@ -94,6 +98,13 @@ class VoiceBarUI(QWidget):
         self._btn_hover_timer = QTimer(self)
         self._btn_hover_timer.setInterval(16)
         self._btn_hover_timer.timeout.connect(self._tick_btn_hover)
+
+        # --- Settings Hover animation ---
+        self._settings_hover_opacity = 0.0
+        self._settings_hover_target = 0.0
+        self._settings_hover_timer = QTimer(self)
+        self._settings_hover_timer.setInterval(16)
+        self._settings_hover_timer.timeout.connect(self._tick_settings_hover)
 
         self._setup_window()
 
@@ -221,6 +232,12 @@ class VoiceBarUI(QWidget):
                     self.minimize_signal.emit()
                     return # Do not start dragging
 
+            # Check if settings button was clicked
+            if self._settings_btn_rect is not None and self._hover_opacity > 0.1:
+                if self._settings_btn_rect.contains(press_pos):
+                    self.settings_signal.emit()
+                    return
+
             self._dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
@@ -242,6 +259,17 @@ class VoiceBarUI(QWidget):
                 self._btn_hover_timer.start()
                 self.update()
 
+                self._btn_hover_timer.start()
+                self.update()
+
+        # Hit testing for cursor change and click detection ONLY
+        if self._settings_btn_rect is not None:
+            is_over_settings = self._settings_btn_rect.contains(pos)
+            if is_over_settings:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            elif not self._is_btn_hovered:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+
         if self._dragging and self._drag_offset is not None:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
@@ -256,14 +284,21 @@ class VoiceBarUI(QWidget):
         """Mouse entered — start bump animation."""
         self._hover_target = 1.0
         self._hover_timer.start()
+        
+        # Show gear icon on hover
+        self._settings_hover_target = 1.0
+        self._settings_hover_timer.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         """Mouse left — start bump reverse animation and restore cursor."""
-        self.setCursor(Qt.CursorShape.ArrowCursor)
         self._is_btn_hovered = False
         self._btn_hover_target = 0.0
         self._btn_hover_timer.start()
+        
+        self._is_settings_btn_hovered = False
+        self._settings_hover_target = 0.0
+        self._settings_hover_timer.start()
         
         self._hover_target = 0.0
         self._hover_timer.start()
@@ -285,6 +320,15 @@ class VoiceBarUI(QWidget):
         if abs(self._btn_hover_opacity - self._btn_hover_target) < 0.005:
             self._btn_hover_opacity = self._btn_hover_target
             self._btn_hover_timer.stop()
+        self.update()
+
+    def _tick_settings_hover(self):
+        """Smooth animation for the settings button icon."""
+        speed = 0.15
+        self._settings_hover_opacity += (self._settings_hover_target - self._settings_hover_opacity) * speed
+        if abs(self._settings_hover_opacity - self._settings_hover_target) < 0.005:
+            self._settings_hover_opacity = self._settings_hover_target
+            self._settings_hover_timer.stop()
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -349,6 +393,12 @@ class VoiceBarUI(QWidget):
 
     def show_animated(self):
         """Play a smooth pop-out and fade-in animation."""
+        # Ensure scale and opacity are at least at a starting point if they were 0
+        if self._global_scale < 0.01:
+            self._global_scale = 0.01
+        if self.windowOpacity() < 0.01:
+            self.setWindowOpacity(0.01)
+
         self.show()
         self.raise_()
         self.activateWindow()
@@ -399,6 +449,44 @@ class VoiceBarUI(QWidget):
         self._draw_background(painter, rect, radius)
         self._draw_state_overlay(painter, rect, cx, cy, w, h)
         self._draw_minimize_button(painter, rect, radius)
+        self._draw_settings_button(painter, rect, radius)
+
+    def _draw_settings_button(self, painter: QPainter, rect: QRectF, radius: float):
+        if self._hover_opacity <= 0.01:
+            self._settings_btn_rect = None
+            return
+            
+        r = 6.0 
+        # Place it on the LEFT side of the pill
+        btn_cx = rect.left() + radius
+        btn_cy = rect.center().y()
+        self._settings_btn_rect = QRectF(btn_cx - r, btn_cy - r, r*2, r*2)
+        
+        painter.setOpacity(self._hover_opacity)
+        # No background circle as requested, just hit-rect hit-testing
+        
+        # Draw gear icon ONLY fluidly animating on hover
+        if self._settings_hover_opacity > 0.01:
+            combined_opacity = self._hover_opacity * self._settings_hover_opacity
+            painter.setPen(QPen(QColor(255, 255, 255, int(200 * combined_opacity)), 1.2))
+            
+            # Simple gear shape (8 spokes)
+            for i in range(8):
+                angle = i * 45
+                rad = math.radians(angle)
+                # Outer point
+                x1 = btn_cx + 3.5 * math.cos(rad)
+                y1 = btn_cy + 3.5 * math.sin(rad)
+                # Inner point
+                x2 = btn_cx + 2.0 * math.cos(rad)
+                y2 = btn_cy + 2.0 * math.sin(rad)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            
+            # Center circle of gear
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(btn_cx, btn_cy), 1.5, 1.5)
+        
+        painter.setOpacity(1.0)
 
     def _draw_minimize_button(self, painter: QPainter, rect: QRectF, radius: float):
         if self._hover_opacity <= 0.01:
