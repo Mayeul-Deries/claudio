@@ -40,12 +40,20 @@ class _InferenceThread(QThread):
             segments, info = self._model.transcribe(
                 audio,
                 language=self._language,
-                beam_size=5
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+                initial_prompt="Bonjour, voici un texte parfait. Il contient une excellente ponctuation, des majuscules, et des virgules."
             )
 
             # Consume the generator
             text_parts = []
             for segment in segments:
+                # Discard segments that are highly likely to be background noise/silence (hallucinations)
+                if segment.no_speech_prob > 0.6:
+                    print(f"[DEBUG] Dropped segment (no_speech_prob={segment.no_speech_prob:.2f}): '{segment.text}'", file=sys.stderr)
+                    continue
+                    
                 if segment.text:
                     text_parts.append(segment.text.strip())
                 
