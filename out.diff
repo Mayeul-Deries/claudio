@@ -1,0 +1,465 @@
+﻿commit 6b40c497a31d950a5a1be203bd0f531803d30ae4
+Author: Mayeul Deries <mayeul.deries@gmail.com>
+Date:   Tue Mar 24 14:38:35 2026 +0100
+
+    Add input mic parameter
+
+diff --git a/main.py b/main.py
+index 2305835..599071e 100644
+--- a/main.py
++++ b/main.py
+@@ -6,15 +6,164 @@ import time
+ # imported BEFORE PyQt6, otherwise it causes an OSError: [WinError 1114] DLL init failed.
+ from transcriber import TranscriberThread
+ 
+-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+-from PyQt6.QtGui import QIcon, QPixmap, QColor
+-from PyQt6.QtCore import Qt, QTimer, QSharedMemory
++from PyQt6.QtWidgets import (
++    QApplication, QSystemTrayIcon, QMenu, QWidget, QVBoxLayout, 
++    QLineEdit, QScrollArea, QPushButton, QLabel, QFrame
++)
++from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QBrush, QAction
++from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QSize, QEvent
+ 
+ from ui import VoiceBarUI, UIState
+-from recorder import AudioRecorder
++from recorder import AudioRecorder, get_input_devices
+ from paste import copy_and_paste
+ from hotkeys import HotkeyListener
+ 
++
++class MicrophoneSelector(QWidget):
++    def __init__(self, parent=None, current_device_id=None, on_select=None):
++        super().__init__(parent)
++        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
++        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
++        
++        self.current_device_id = current_device_id
++        self.on_select = on_select
++        self.all_devices = sorted(get_input_devices(), key=lambda x: x[1].lower())
++        
++        self._setup_ui()
++        self.setFixedWidth(280)
++        
++    def _setup_ui(self):
++        self.main_layout = QVBoxLayout(self)
++        self.main_layout.setContentsMargins(0, 0, 0, 0)
++        
++        # Container frame for styling
++        self.container = QFrame()
++        self.container.setObjectName("container")
++        self.container.setStyleSheet("""
++            #container {
++                background-color: rgba(25, 25, 25, 230);
++                border: 1px solid rgba(80, 80, 80, 150);
++                border-radius: 12px;
++            }
++            QLineEdit {
++                background-color: rgba(45, 45, 45, 200);
++                color: white;
++                border: 1px solid rgba(100, 100, 100, 100);
++                border-radius: 6px;
++                padding: 6px 10px;
++                margin: 8px 8px 4px 8px;
++                font-size: 13px;
++            }
++            QScrollArea {
++                border: none;
++                background-color: transparent;
++            }
++            #scroll_content {
++                background-color: transparent;
++            }
++            QPushButton {
++                background-color: transparent;
++                color: #ccc;
++                text-align: left;
++                padding: 8px 12px;
++                border-radius: 6px;
++                margin: 1px 6px;
++                font-size: 13px;
++            }
++            QPushButton:hover {
++                background-color: rgba(255, 255, 255, 25);
++                color: white;
++            }
++            QPushButton[selected="true"] {
++                color: #55aaff;
++                background-color: rgba(85, 170, 255, 30);
++            }
++            QScrollBar:vertical {
++                border: none;
++                background: transparent;
++                width: 4px;
++                margin: 0px;
++            }
++            QScrollBar::handle:vertical {
++                background: rgba(100, 100, 100, 150);
++                min-height: 20px;
++                border-radius: 2px;
++            }
++            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
++                height: 0px;
++            }
++        """)
++        
++        container_layout = QVBoxLayout(self.container)
++        container_layout.setContentsMargins(0, 0, 0, 4)
++        container_layout.setSpacing(0)
++        
++        # Search Box
++        self.search_box = QLineEdit()
++        self.search_box.setPlaceholderText("Rechercher un micro...")
++        self.search_box.textChanged.connect(self._filter_devices)
++        container_layout.addWidget(self.search_box)
++        
++        # Scroll Area
++        self.scroll = QScrollArea()
++        self.scroll.setWidgetResizable(True)
++        self.scroll_content = QWidget()
++        self.scroll_content.setObjectName("scroll_content")
++        self.scroll_layout = QVBoxLayout(self.scroll_content)
++        self.scroll_layout.setContentsMargins(0, 4, 0, 4)
++        self.scroll_layout.setSpacing(0)
++        
++        self.scroll.setWidget(self.scroll_content)
++        container_layout.addWidget(self.scroll)
++        
++        self.main_layout.addWidget(self.container)
++        
++        # Initial device list
++        self._refresh_list(self.all_devices)
++        
++    def _refresh_list(self, devices):
++        # Clear existing
++        for i in reversed(range(self.scroll_layout.count())): 
++            self.scroll_layout.itemAt(i).widget().setParent(None)
++            
++        # Add 'Auto-d├®tection'
++        auto_btn = QPushButton("Auto-d├®tection (Windows par d├®faut)")
++        auto_btn.setProperty("selected", self.current_device_id is None)
++        auto_btn.clicked.connect(lambda: self._select_device(None))
++        self.scroll_layout.addWidget(auto_btn)
++        
++        # Add devices
++        for idx, name in devices:
++            btn = QPushButton(name)
++            btn.setProperty("selected", idx == self.current_device_id)
++            btn.clicked.connect(lambda checked, i=idx: self._select_device(i))
++            self.scroll_layout.addWidget(btn)
++            
++        # Limit height to max 10 items (approx 40px per item + search box)
++        item_count = len(devices) + 1
++        display_count = min(10, item_count)
++        scroll_h = display_count * 36 + 10
++        self.scroll.setFixedHeight(scroll_h)
++        
++    def _filter_devices(self, text):
++        if not text:
++            self._refresh_list(self.all_devices)
++            return
++            
++        filtered = [d for d in self.all_devices if text.lower() in d[1].lower()]
++        self._refresh_list(filtered)
++        
++    def _select_device(self, index):
++        if self.on_select:
++            self.on_select(index)
++        self.close()
++
++    def showAt(self, point):
++        # Center horizontally on the point, show above/below
++        self.move(point.x() - self.width() // 2, point.y() + 10)
++        self.show()
++        self.search_box.setFocus()
++
+ class ClaudioApp:
+     def __init__(self):
+         self.app = QApplication.instance() or QApplication(sys.argv)
+@@ -81,6 +230,7 @@ class ClaudioApp:
+         
+         # UI -> Controller
+         self.ui.minimize_signal.connect(self.ui.minimize_animated)
++        self.ui.settings_signal.connect(self.show_settings_menu)
+         
+         # Note: transcriber fires callback directly ÔÇö no persistent signal to connect here
+ 
+@@ -134,6 +284,28 @@ class ClaudioApp:
+             self.recorder.stop()
+             self.ui.set_state_idle()
+ 
++    def show_settings_menu(self):
++        """Show a custom searchable menu to select the audio input device."""
++        if hasattr(self, '_selector') and self._selector.isVisible():
++            self._selector.close()
++            return
++            
++        self._selector = MicrophoneSelector(
++            current_device_id=self.recorder.device_index,
++            on_select=self._set_device
++        )
++        
++        if self.ui._settings_btn_rect:
++            btn_pos = self.ui._settings_btn_rect.bottomLeft()
++            global_pos = self.ui.mapToGlobal(btn_pos.toPoint())
++            self._selector.showAt(global_pos)
++
++    def _set_device(self, device_index):
++        print(f"Claudio: Setting input device to {device_index}", file=sys.stderr)
++        self.recorder.device_index = device_index
++        # If recording, we don't restart it mid-way. 
++        # The new device will be used on the next recording.
++
+     def _on_transcription_finished(self, text: str):
+         """Called when Whisper QThread completes."""
+         if text:
+@@ -158,10 +330,8 @@ class ClaudioApp:
+         if time_diff > 15.0:
+             print(f"Claudio: System wake-up detected! (Time jump: {time_diff:.1f}s)", file=sys.stderr)
+             
+-            # Ensure UI is visible
+-            self.ui.show()
+-            self.ui.raise_()
+-            self.ui.activateWindow()
++            # Ensure UI is visible using the animated restoration which now resets scale/opacity
++            self.show_ui()
+             
+             # Re-center UI twice to handle geometry stabilisation
+             self.ui._center_on_screen()
+diff --git a/recorder.py b/recorder.py
+index fa9dc6c..2217b17 100644
+--- a/recorder.py
++++ b/recorder.py
+@@ -3,21 +3,42 @@ import sys
+ import numpy as np
+ import sounddevice as sd
+ 
+-def _pick_input_device() -> int | None:
+-    """Find the best microphone device.
++def get_input_devices():
++    """Returns a list of (index, name) pairs for all input devices."""
++    devices = sd.query_devices()
++    input_devices = []
++    for i, d in enumerate(devices):
++        if d['max_input_channels'] > 0:
++            input_devices.append((i, d['name']))
++    return input_devices
++
++def _pick_input_device(preferred_index=None) -> int | None:
++    """Find the best microphone device or use the preferred one.
+ 
+     Priority:
+-    1. SteelSeries Arctis (user's actual headset mic)
+-    2. Realtek built-in mic
+-    3. None ÔåÆ sounddevice system default
++    1. preferred_index (if provided and valid)
++    2. SteelSeries Arctis (user's actual headset mic)
++    3. Realtek built-in mic
++    4. None ÔåÆ sounddevice system default
+     """
+-    import sounddevice as sd
+     devices = sd.query_devices()
++    
++    # 1. Use preferred index if valid
++    if preferred_index is not None:
++        try:
++            d = devices[preferred_index]
++            if d['max_input_channels'] > 0:
++                print(f"[Recorder] Using manually selected device [{preferred_index}]: {d['name']}", file=sys.stderr)
++                return preferred_index
++        except (IndexError, TypeError):
++            pass
++
++    # 2. Auto-pick logic
+     preferred = ["steelseries arctis", "realtek"]
+     for keyword in preferred:
+         for i, d in enumerate(devices):
+             if d['max_input_channels'] > 0 and keyword in d['name'].lower():
+-                print(f"[Recorder] Selected input device [{i}]: {d['name']}", file=sys.stderr)
++                print(f"[Recorder] Auto-selected input device [{i}]: {d['name']}", file=sys.stderr)
+                 return i
+     print("[Recorder] Falling back to system default input device.", file=sys.stderr)
+     return None
+@@ -31,6 +52,7 @@ class AudioRecorder:
+         self.stream = None
+         self.is_recording = False
+         self.audio_data = []
++        self.device_index = None # Manually selected device index
+ 
+     def _audio_callback(self, indata, frames, time, status):
+         """This is called (from a separate thread) for each audio block."""
+@@ -52,7 +74,7 @@ class AudioRecorder:
+                 samplerate=self.samplerate,
+                 channels=self.channels,
+                 dtype='float32',
+-                device=_pick_input_device(),
++                device=_pick_input_device(self.device_index),
+                 callback=self._audio_callback
+             )
+             self.stream.start()
+diff --git a/ui.py b/ui.py
+index 806e7c7..dd91a84 100644
+--- a/ui.py
++++ b/ui.py
+@@ -25,6 +25,7 @@ _CONTAINER_H = 80
+ 
+ class VoiceBarUI(QWidget):
+     minimize_signal = pyqtSignal()
++    settings_signal = pyqtSignal()
+ 
+     def __init__(self):
+         super().__init__()
+@@ -41,6 +42,9 @@ class VoiceBarUI(QWidget):
+         self._dragging = False
+         self._min_btn_rect = None  # Rect of the minimize button for clicks
+         self._is_btn_hovered = False # Is mouse strictly over the red button?
++        
++        self._settings_btn_rect = None # Rect of the settings button
++        self._is_settings_btn_hovered = False
+ 
+         # --- Animation objects (kept as instance vars to prevent GC) ---
+         self.anim_w = None
+@@ -95,6 +99,13 @@ class VoiceBarUI(QWidget):
+         self._btn_hover_timer.setInterval(16)
+         self._btn_hover_timer.timeout.connect(self._tick_btn_hover)
+ 
++        # --- Settings Hover animation ---
++        self._settings_hover_opacity = 0.0
++        self._settings_hover_target = 0.0
++        self._settings_hover_timer = QTimer(self)
++        self._settings_hover_timer.setInterval(16)
++        self._settings_hover_timer.timeout.connect(self._tick_settings_hover)
++
+         self._setup_window()
+ 
+     def _setup_window(self):
+@@ -221,6 +232,12 @@ class VoiceBarUI(QWidget):
+                     self.minimize_signal.emit()
+                     return # Do not start dragging
+ 
++            # Check if settings button was clicked
++            if self._settings_btn_rect is not None and self._hover_opacity > 0.1:
++                if self._settings_btn_rect.contains(press_pos):
++                    self.settings_signal.emit()
++                    return
++
+             self._dragging = True
+             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+         super().mousePressEvent(event)
+@@ -242,6 +259,17 @@ class VoiceBarUI(QWidget):
+                 self._btn_hover_timer.start()
+                 self.update()
+ 
++                self._btn_hover_timer.start()
++                self.update()
++
++        # Hit testing for cursor change and click detection ONLY
++        if self._settings_btn_rect is not None:
++            is_over_settings = self._settings_btn_rect.contains(pos)
++            if is_over_settings:
++                self.setCursor(Qt.CursorShape.PointingHandCursor)
++            elif not self._is_btn_hovered:
++                self.setCursor(Qt.CursorShape.ArrowCursor)
++
+         if self._dragging and self._drag_offset is not None:
+             self.move(event.globalPosition().toPoint() - self._drag_offset)
+         super().mouseMoveEvent(event)
+@@ -256,15 +284,22 @@ class VoiceBarUI(QWidget):
+         """Mouse entered ÔÇö start bump animation."""
+         self._hover_target = 1.0
+         self._hover_timer.start()
++        
++        # Show gear icon on hover
++        self._settings_hover_target = 1.0
++        self._settings_hover_timer.start()
+         super().enterEvent(event)
+ 
+     def leaveEvent(self, event):
+         """Mouse left ÔÇö start bump reverse animation and restore cursor."""
+-        self.setCursor(Qt.CursorShape.ArrowCursor)
+         self._is_btn_hovered = False
+         self._btn_hover_target = 0.0
+         self._btn_hover_timer.start()
+         
++        self._is_settings_btn_hovered = False
++        self._settings_hover_target = 0.0
++        self._settings_hover_timer.start()
++        
+         self._hover_target = 0.0
+         self._hover_timer.start()
+         super().leaveEvent(event)
+@@ -287,6 +322,15 @@ class VoiceBarUI(QWidget):
+             self._btn_hover_timer.stop()
+         self.update()
+ 
++    def _tick_settings_hover(self):
++        """Smooth animation for the settings button icon."""
++        speed = 0.15
++        self._settings_hover_opacity += (self._settings_hover_target - self._settings_hover_opacity) * speed
++        if abs(self._settings_hover_opacity - self._settings_hover_target) < 0.005:
++            self._settings_hover_opacity = self._settings_hover_target
++            self._settings_hover_timer.stop()
++        self.update()
++
+     # ------------------------------------------------------------------ #
+     # Internal animation helpers                                           #
+     # ------------------------------------------------------------------ #
+@@ -349,6 +393,12 @@ class VoiceBarUI(QWidget):
+ 
+     def show_animated(self):
+         """Play a smooth pop-out and fade-in animation."""
++        # Ensure scale and opacity are at least at a starting point if they were 0
++        if self._global_scale < 0.01:
++            self._global_scale = 0.01
++        if self.windowOpacity() < 0.01:
++            self.setWindowOpacity(0.01)
++
+         self.show()
+         self.raise_()
+         self.activateWindow()
+@@ -399,6 +449,44 @@ class VoiceBarUI(QWidget):
+         self._draw_background(painter, rect, radius)
+         self._draw_state_overlay(painter, rect, cx, cy, w, h)
+         self._draw_minimize_button(painter, rect, radius)
++        self._draw_settings_button(painter, rect, radius)
++
++    def _draw_settings_button(self, painter: QPainter, rect: QRectF, radius: float):
++        if self._hover_opacity <= 0.01:
++            self._settings_btn_rect = None
++            return
++            
++        r = 6.0 
++        # Place it on the LEFT side of the pill
++        btn_cx = rect.left() + radius
++        btn_cy = rect.center().y()
++        self._settings_btn_rect = QRectF(btn_cx - r, btn_cy - r, r*2, r*2)
++        
++        painter.setOpacity(self._hover_opacity)
++        # No background circle as requested, just hit-rect hit-testing
++        
++        # Draw gear icon ONLY fluidly animating on hover
++        if self._settings_hover_opacity > 0.01:
++            combined_opacity = self._hover_opacity * self._settings_hover_opacity
++            painter.setPen(QPen(QColor(255, 255, 255, int(200 * combined_opacity)), 1.2))
++            
++            # Simple gear shape (8 spokes)
++            for i in range(8):
++                angle = i * 45
++                rad = math.radians(angle)
++                # Outer point
++                x1 = btn_cx + 3.5 * math.cos(rad)
++                y1 = btn_cy + 3.5 * math.sin(rad)
++                # Inner point
++                x2 = btn_cx + 2.0 * math.cos(rad)
++                y2 = btn_cy + 2.0 * math.sin(rad)
++                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
++            
++            # Center circle of gear
++            painter.setBrush(Qt.BrushStyle.NoBrush)
++            painter.drawEllipse(QPointF(btn_cx, btn_cy), 1.5, 1.5)
++        
++        painter.setOpacity(1.0)
+ 
+     def _draw_minimize_button(self, painter: QPainter, rect: QRectF, radius: float):
+         if self._hover_opacity <= 0.01:

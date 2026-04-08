@@ -2,6 +2,27 @@ import sys
 import keyboard
 from PyQt6.QtCore import QObject, pyqtSignal
 
+
+def _purge_keyboard_internal_state():
+    """Force-clear the keyboard library's internal modifier/key state.
+
+    The `keyboard` library tracks pressed keys internally. On Windows,
+    certain scenarios (right-Ctrl/Alt press with suppress, sleep/wake,
+    pyautogui simulated keypresses) desync this internal state from
+    reality, leaving modifier keys permanently "stuck". This makes
+    combo hotkeys (ctrl+space) silently stop matching.
+
+    See: https://github.com/boppreh/keyboard/issues/666
+          https://github.com/boppreh/keyboard/issues/674
+    """
+    try:
+        with keyboard._pressed_events_lock:
+            keyboard._pressed_events.clear()
+        keyboard._listener.active_modifiers.clear()
+        keyboard._logically_pressed_keys.clear()
+    except Exception as e:
+        print(f"Claudio: keyboard state purge error: {e}", file=sys.stderr)
+
 class HotkeyListener(QObject):
     # Signals to communicate with the main UI thread
     toggle_record_signal = pyqtSignal()
@@ -30,8 +51,8 @@ class HotkeyListener(QObject):
             self.unregister()
             
         try:
-            keyboard.add_hotkey(self.start_stop_hotkey, self._on_toggle, suppress=True)
-            keyboard.add_hotkey(self.cancel_hotkey, self._on_cancel, suppress=True)
+            keyboard.add_hotkey(self.start_stop_hotkey, self._on_toggle, suppress=False)
+            keyboard.add_hotkey(self.cancel_hotkey, self._on_cancel, suppress=False)
             self._registered = True
             print(f"Hotkeys registered: '{self.start_stop_hotkey}', '{self.cancel_hotkey}'", file=sys.stderr)
         except ImportError as e:
@@ -53,4 +74,9 @@ class HotkeyListener(QObject):
     def refresh(self):
         """Unregister and re-register hotkeys."""
         print("Refreshing hotkeys...", file=sys.stderr)
+        _purge_keyboard_internal_state()
         self.register(force=True)
+
+    def purge_stale_state(self):
+        """Periodically called by the main app to prevent modifier-stuck issues."""
+        _purge_keyboard_internal_state()

@@ -204,6 +204,14 @@ class ClaudioApp:
         self.wake_timer.timeout.connect(self._check_system_wake)
         self.wake_timer.start(5000) # 5 seconds
         
+        # Hotkey health watchdog — periodically purge stuck modifier keys
+        # from the keyboard library's internal state. This is a known bug
+        # where Ctrl/Alt get "stuck" after right-key presses or pyautogui use.
+        # See: https://github.com/boppreh/keyboard/issues/666
+        self.hotkey_watchdog = QTimer()
+        self.hotkey_watchdog.timeout.connect(self.hotkeys.purge_stale_state)
+        self.hotkey_watchdog.start(30000) # every 30 seconds
+        
     def _setup_tray(self):
         icon = QIcon("icon.ico")
         self.app.setWindowIcon(icon)
